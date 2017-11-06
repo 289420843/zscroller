@@ -2,6 +2,11 @@ import _extends from 'babel-runtime/helpers/extends';
 import Scroller from './Scroller';
 
 var MIN_INDICATOR_SIZE = 8;
+var win = typeof window !== 'undefined' ? window : undefined;
+
+if (!win) {
+  win = typeof global !== 'undefined' ? global : {};
+}
 
 function setTransform(nodeStyle, value) {
   nodeStyle.transform = value;
@@ -13,6 +18,38 @@ function setTransformOrigin(nodeStyle, value) {
   nodeStyle.transformOrigin = value;
   nodeStyle.webkitTransformOrigin = value;
   nodeStyle.MozTransformOrigin = value;
+}
+
+var supportsPassive = false;
+try {
+  var opts = Object.defineProperty({}, 'passive', {
+    get: function get() {
+      supportsPassive = true;
+    }
+  });
+  win.addEventListener('test', null, opts);
+} catch (e) {
+  // empty
+}
+
+var isWebView = typeof navigator !== 'undefined' && /(iPhone|iPod|iPad).*AppleWebKit(?!.*Safari)/i.test(navigator.userAgent);
+
+function iOSWebViewFix(e, touchendFn) {
+  // https://github.com/ant-design/ant-design-mobile/issues/573#issuecomment-339560829
+  // iOS UIWebView issue, It seems no problem in WKWebView
+  if (isWebView && e.changedTouches[0].clientY < 0) {
+    touchendFn(new Event('touchend') || e);
+  }
+}
+
+var willPreventDefault = supportsPassive ? { passive: false } : false;
+var willNotPreventDefault = supportsPassive ? { passive: true } : false;
+
+function addEventListener(target, type, fn, options) {
+  target.addEventListener(type, fn, options);
+  return function () {
+    target.removeEventListener(type, fn, options);
+  };
 }
 
 function DOMScroller(content) {
@@ -30,7 +67,7 @@ function DOMScroller(content) {
   var clientSize = void 0;
 
   this.content = content;
-  this.container = content.parentNode;
+  var container = this.container = content.parentNode;
   this.options = _extends({}, options, {
     scrollingComplete: function scrollingComplete() {
       _this.clearScrollbarTimer();
@@ -73,7 +110,7 @@ function DOMScroller(content) {
         indicatorsSize[k] = -1;
         scrollbarsOpacity[k] = 0;
         indicatorsPos[k] = 0;
-        _this.container.appendChild(scrollbars[k]);
+        container.appendChild(scrollbars[k]);
       }
     });
   }
@@ -128,161 +165,196 @@ function DOMScroller(content) {
   this.reflow();
 }
 
-DOMScroller.prototype.setDisabled = function setDisabled(disabled) {
-  this.disabled = disabled;
-};
+DOMScroller.prototype = {
+  constructor: DOMScroller,
+  setDisabled: function setDisabled(disabled) {
+    this.disabled = disabled;
+  },
+  clearScrollbarTimer: function clearScrollbarTimer() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  },
+  setScrollbarOpacity: function setScrollbarOpacity(axis, opacity) {
+    if (this.scrollbarsOpacity[axis] !== opacity) {
+      this.scrollbars[axis].style.opacity = opacity;
+      this.scrollbarsOpacity[axis] = opacity;
+    }
+  },
+  setIndicatorPos: function setIndicatorPos(axis, value) {
+    var indicatorsPos = this.indicatorsPos,
+        indicators = this.indicators;
 
-DOMScroller.prototype.clearScrollbarTimer = function clearScrollbarTimer() {
-  if (this.timer) {
-    clearTimeout(this.timer);
-    this.timer = null;
-  }
-};
+    if (indicatorsPos[axis] !== value) {
+      if (axis === 'x') {
+        setTransform(indicators[axis].style, 'translate3d(' + value + 'px,0,0)');
+      } else {
+        setTransform(indicators[axis].style, 'translate3d(0, ' + value + 'px,0)');
+      }
+      indicatorsPos[axis] = value;
+    }
+  },
+  setIndicatorSize: function setIndicatorSize(axis, value) {
+    var indicatorsSize = this.indicatorsSize,
+        indicators = this.indicators;
 
-DOMScroller.prototype.setScrollbarOpacity = function setScrollbarOpacity(axis, opacity) {
-  if (this.scrollbarsOpacity[axis] !== opacity) {
-    this.scrollbars[axis].style.opacity = opacity;
-    this.scrollbarsOpacity[axis] = opacity;
-  }
-};
+    if (indicatorsSize[axis] !== value) {
+      indicators[axis].style[axis === 'x' ? 'width' : 'height'] = value + 'px';
+      indicatorsSize[axis] = value;
+    }
+  },
+  reflow: function reflow() {
+    var container = this.container,
+        content = this.content,
+        scrollbarsSize = this.scrollbarsSize,
+        contentSize = this.contentSize,
+        scrollbars = this.scrollbars,
+        clientSize = this.clientSize,
+        scroller = this.scroller;
 
-DOMScroller.prototype.setIndicatorPos = function setIndicatorPos(axis, value) {
-  if (this.indicatorsPos[axis] !== value) {
-    if (axis === 'x') {
-      setTransform(this.indicators[axis].style, 'translate3d(' + value + 'px,0,0)');
+    if (scrollbars) {
+      contentSize.x = content.offsetWidth;
+      contentSize.y = content.offsetHeight;
+      clientSize.x = container.clientWidth;
+      clientSize.y = container.clientHeight;
+      if (scrollbars.x) {
+        scrollbarsSize.x = scrollbars.x.offsetWidth;
+      }
+      if (scrollbars.y) {
+        scrollbarsSize.y = scrollbars.y.offsetHeight;
+      }
+    }
+    // set the right scroller dimensions
+    scroller.setDimensions(container.clientWidth, container.clientHeight, content.offsetWidth, content.offsetHeight);
+
+    // refresh the position for zooming purposes
+    var rect = container.getBoundingClientRect();
+    scroller.setPosition(rect.x + container.clientLeft, rect.y + container.clientTop);
+  },
+  destroy: function destroy() {
+    this._destroyed = true;
+    this.unbindEvent();
+  },
+  unbindEvent: function unbindEvent(type) {
+    var eventHandlers = this.eventHandlers;
+
+    if (type) {
+      if (eventHandlers[type]) {
+        eventHandlers[type]();
+        delete eventHandlers[type];
+      }
     } else {
-      setTransform(this.indicators[axis].style, 'translate3d(0, ' + value + 'px,0)');
+      Object.keys(eventHandlers).forEach(function (t) {
+        eventHandlers[t]();
+        delete eventHandlers[t];
+      });
     }
-    this.indicatorsPos[axis] = value;
-  }
-};
+  },
+  bindEvent: function bindEvent(target, type, fn, options) {
+    var eventHandlers = this.eventHandlers;
 
-DOMScroller.prototype.setIndicatorSize = function setIndicatorSize(axis, value) {
-  if (this.indicatorsSize[axis] !== value) {
-    this.indicators[axis].style[axis === 'x' ? 'width' : 'height'] = value + 'px';
-    this.indicatorsSize[axis] = value;
-  }
-};
-
-DOMScroller.prototype.reflow = function reflow() {
-  if (this.scrollbars) {
-    this.contentSize.x = this.content.offsetWidth;
-    this.contentSize.y = this.content.offsetHeight;
-    this.clientSize.x = this.container.clientWidth;
-    this.clientSize.y = this.container.clientHeight;
-    if (this.scrollbars.x) {
-      this.scrollbarsSize.x = this.scrollbars.x.offsetWidth;
+    if (eventHandlers[type]) {
+      eventHandlers[type]();
     }
-    if (this.scrollbars.y) {
-      this.scrollbarsSize.y = this.scrollbars.y.offsetHeight;
+    eventHandlers[type] = addEventListener(target, type, fn, options);
+  },
+  bindEvents: function bindEvents() {
+    var _this2 = this;
+
+    // reflow handling
+    this.eventHandlers = {};
+
+    this.bindEvent(win, 'resize', function () {
+      _this2.reflow();
+    }, false);
+
+    var lockMouse = false;
+    var releaseLockTimer = void 0;
+
+    var container = this.container,
+        scroller = this.scroller;
+
+
+    this.bindEvent(container, 'touchstart', function (e) {
+      lockMouse = true;
+      if (releaseLockTimer) {
+        clearTimeout(releaseLockTimer);
+        releaseLockTimer = null;
+      }
+      // Don't react if initial down happens on a form element
+      if (e.touches[0] && e.touches[0].target && e.touches[0].target.tagName.match(/input|textarea|select/i) || _this2.disabled) {
+        return;
+      }
+      _this2.clearScrollbarTimer();
+      // reflow since the container may have changed
+      _this2.reflow();
+      scroller.doTouchStart(e.touches, e.timeStamp);
+    }, willNotPreventDefault);
+
+    var _options = this.options,
+        preventDefaultOnTouchMove = _options.preventDefaultOnTouchMove,
+        zooming = _options.zooming;
+
+    var onTouchEnd = function onTouchEnd(e) {
+      scroller.doTouchEnd(e.timeStamp);
+      releaseLockTimer = setTimeout(function () {
+        lockMouse = false;
+      }, 300);
+    };
+
+    if (preventDefaultOnTouchMove !== false) {
+      this.bindEvent(container, 'touchmove', function (e) {
+        e.preventDefault();
+        scroller.doTouchMove(e.touches, e.timeStamp, e.scale);
+        iOSWebViewFix(e, onTouchEnd);
+      }, willPreventDefault);
+    } else {
+      this.bindEvent(container, 'touchmove', function (e) {
+        scroller.doTouchMove(e.touches, e.timeStamp, e.scale);
+        iOSWebViewFix(e, onTouchEnd);
+      }, willNotPreventDefault);
     }
-  }
-  // set the right scroller dimensions
-  this.scroller.setDimensions(this.container.clientWidth, this.container.clientHeight, this.content.offsetWidth, this.content.offsetHeight);
 
-  // refresh the position for zooming purposes
-  var rect = this.container.getBoundingClientRect();
-  this.scroller.setPosition(rect.x + this.container.clientLeft, rect.y + this.container.clientTop);
-};
+    this.bindEvent(container, 'touchend', onTouchEnd, willNotPreventDefault);
+    this.bindEvent(container, 'touchcancel', onTouchEnd, willNotPreventDefault);
 
-DOMScroller.prototype.destroy = function destroy() {
-  this._destroyed = true;
-  window.removeEventListener('resize', this.onResize, false);
-  this.container.removeEventListener('touchstart', this.onTouchStart, false);
-  this.container.removeEventListener('touchmove', this.onTouchMove, false);
-  this.container.removeEventListener('touchend', this.onTouchEnd, false);
-  this.container.removeEventListener('touchcancel', this.onTouchCancel, false);
-  this.container.removeEventListener('mousedown', this.onMouseDown, false);
-  document.removeEventListener('mousemove', this.onMouseMove, false);
-  document.removeEventListener('mouseup', this.onMouseUp, false);
-  this.container.removeEventListener('mousewheel', this.onMouseWheel, false);
-};
+    var onMouseUp = function onMouseUp(e) {
+      scroller.doTouchEnd(e.timeStamp);
+      _this2.unbindEvent('mousemove');
+      _this2.unbindEvent('mouseup');
+    };
 
-DOMScroller.prototype.bindEvents = function bindEvents() {
-  var _this2 = this;
+    var onMouseMove = function onMouseMove(e) {
+      scroller.doTouchMove([{
+        pageX: e.pageX,
+        pageY: e.pageY
+      }], e.timeStamp);
+    };
 
-  var that = this;
-
-  // reflow handling
-  window.addEventListener('resize', this.onResize = function () {
-    that.reflow();
-  }, false);
-
-  var lockMouse = false;
-  var releaseLockTimer = void 0;
-
-  this.container.addEventListener('touchstart', this.onTouchStart = function (e) {
-    lockMouse = true;
-    if (releaseLockTimer) {
-      clearTimeout(releaseLockTimer);
-      releaseLockTimer = null;
-    }
-    // Don't react if initial down happens on a form element
-    if (e.touches[0] && e.touches[0].target && e.touches[0].target.tagName.match(/input|textarea|select/i) || _this2.disabled) {
-      return;
-    }
-    _this2.clearScrollbarTimer();
-    // reflow since the container may have changed
-    that.reflow();
-    that.scroller.doTouchStart(e.touches, e.timeStamp);
-  }, false);
-
-  this.container.addEventListener('touchmove', this.onTouchMove = function (e) {
-    if (_this2.options.preventDefaultOnTouchMove !== false) {
+    this.bindEvent(container, 'mousedown', function (e) {
+      if (lockMouse || e.target.tagName.match(/input|textarea|select/i) || _this2.disabled) {
+        return;
+      }
+      _this2.clearScrollbarTimer();
+      scroller.doTouchStart([{
+        pageX: e.pageX,
+        pageY: e.pageY
+      }], e.timeStamp);
+      // reflow since the container may have changed
+      _this2.reflow();
       e.preventDefault();
+      _this2.bindEvent(document, 'mousemove', onMouseMove, willNotPreventDefault);
+      _this2.bindEvent(document, 'mouseup', onMouseUp, willNotPreventDefault);
+    }, willPreventDefault);
+
+    if (zooming) {
+      this.bindEvent(container, 'mousewheel', function (e) {
+        scroller.doMouseZoom(e.wheelDelta, e.timeStamp, e.pageX, e.pageY);
+        e.preventDefault();
+      }, willPreventDefault);
     }
-    that.scroller.doTouchMove(e.touches, e.timeStamp, e.scale);
-  }, false);
-
-  this.container.addEventListener('touchend', this.onTouchEnd = function (e) {
-    that.scroller.doTouchEnd(e.timeStamp);
-    releaseLockTimer = setTimeout(function () {
-      lockMouse = false;
-    }, 300);
-  }, false);
-
-  this.container.addEventListener('touchcancel', this.onTouchCancel = function (e) {
-    that.scroller.doTouchEnd(e.timeStamp);
-    releaseLockTimer = setTimeout(function () {
-      lockMouse = false;
-    }, 300);
-  }, false);
-
-  this.onMouseUp = function (e) {
-    that.scroller.doTouchEnd(e.timeStamp);
-    document.removeEventListener('mousemove', _this2.onMouseMove, false);
-    document.removeEventListener('mouseup', _this2.onMouseUp, false);
-  };
-
-  this.onMouseMove = function (e) {
-    that.scroller.doTouchMove([{
-      pageX: e.pageX,
-      pageY: e.pageY
-    }], e.timeStamp);
-  };
-
-  this.container.addEventListener('mousedown', this.onMouseDown = function (e) {
-    if (lockMouse || e.target.tagName.match(/input|textarea|select/i) || _this2.disabled) {
-      return;
-    }
-    _this2.clearScrollbarTimer();
-    that.scroller.doTouchStart([{
-      pageX: e.pageX,
-      pageY: e.pageY
-    }], e.timeStamp);
-    // reflow since the container may have changed
-    that.reflow();
-    e.preventDefault();
-    document.addEventListener('mousemove', _this2.onMouseMove, false);
-    document.addEventListener('mouseup', _this2.onMouseUp, false);
-  }, false);
-
-  this.container.addEventListener('mousewheel', this.onMouseWheel = function (e) {
-    if (that.options.zooming) {
-      that.scroller.doMouseZoom(e.wheelDelta, e.timeStamp, e.pageX, e.pageY);
-      e.preventDefault();
-    }
-  }, false);
+  }
 };
 
 export default DOMScroller;

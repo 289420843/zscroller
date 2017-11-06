@@ -22,8 +22,6 @@
  * rendering. This eases a lot of cases where it might be pretty complex to break down a state
  * based on the pure time difference.
  */
-import raf from 'raf';
-
 var desiredFrames = 60;
 var millisecondsPerSecond = 1000;
 var running = {};
@@ -33,6 +31,37 @@ var win = typeof window !== 'undefined' ? window : undefined;
 if (!win) {
   win = typeof global !== 'undefined' ? global : {};
 }
+
+// http://paulirish.com/2011/requestanimationframe-for-smart-animating/
+// http://my.opera.com/emoller/blog/2011/12/20/requestanimationframe-for-smart-er-animating
+
+// requestAnimationFrame polyfill by Erik Möller
+// fixes from Paul Irish and Tino Zijdel
+(function () {
+  var lastTime = 0;
+  var vendors = ['ms', 'moz', 'webkit', 'o'];
+  for (var x = 0; x < vendors.length && !win.requestAnimationFrame; ++x) {
+    win.requestAnimationFrame = win[vendors[x] + 'RequestAnimationFrame'];
+    win.cancelAnimationFrame = win[vendors[x] + 'CancelAnimationFrame'] || win[vendors[x] + 'CancelRequestAnimationFrame'];
+  }
+
+  if (!win.requestAnimationFrame) {
+    win.requestAnimationFrame = function (callback) {
+      var currTime = new Date().getTime();
+      var timeToCall = Math.max(0, 16 - (currTime - lastTime));
+      var id = win.setTimeout(function () {
+        callback(currTime + timeToCall);
+      }, timeToCall);
+      lastTime = currTime + timeToCall;
+      return id;
+    };
+  }
+  if (!win.cancelAnimationFrame) {
+    win.cancelAnimationFrame = function (id) {
+      clearTimeout(id);
+    };
+  }
+})();
 
 var Animate = {
   /**
@@ -132,7 +161,7 @@ var Animate = {
         completedCallback && completedCallback(desiredFrames - dropCounter / ((now - start) / millisecondsPerSecond), id, percent === 1 || duration == null);
       } else if (render) {
         lastFrame = now;
-        raf(step);
+        win.requestAnimationFrame(step);
       }
     };
 
@@ -140,7 +169,7 @@ var Animate = {
     running[id] = true;
 
     // Init first step
-    raf(step);
+    win.requestAnimationFrame(step);
 
     // Return unique animation ID
     return id;
